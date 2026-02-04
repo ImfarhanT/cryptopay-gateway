@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CryptoPay Checkout Example</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            margin-bottom: 30px;
+            color: #333;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            background: #007cba;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #005a87;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .payment-info {
+            display: none;
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+
+        .payment-info.active {
+            display: block;
+        }
+
+        .amount-section {
+            margin-bottom: 20px;
+        }
+
+        .amount-label {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .amount-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+
+        .address-section {
+            margin-bottom: 20px;
+        }
+
+        .address-label {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .address-box {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .address-box code {
+            flex: 1;
+            padding: 12px;
+            background: white;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            word-break: break-all;
+        }
+
+        .copy-btn {
+            padding: 12px 20px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            white-space: nowrap;
+        }
+
+        .copy-btn:hover {
+            background: #218838;
+        }
+
+        .qr-section {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .qr-code {
+            max-width: 250px;
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 10px;
+            background: white;
+        }
+
+        .countdown {
+            text-align: center;
+            font-size: 20px;
+            font-weight: bold;
+            color: #e74c3c;
+            margin-bottom: 20px;
+        }
+
+        .status-message {
+            text-align: center;
+            padding: 15px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+
+        .status-message.success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-message.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-message.pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .error {
+            color: #dc3545;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>CryptoPay Checkout</h1>
+        
+        <form id="checkout-form">
+            <div class="form-group">
+                <label for="api-base-url">API Base URL</label>
+                <input type="text" id="api-base-url" value="http://localhost:5000" required>
+            </div>
+
+            <div class="form-group">
+                <label for="api-key">API Key</label>
+                <input type="text" id="api-key" placeholder="Your API key" required>
+            </div>
+
+            <div class="form-group">
+                <label for="merchant-id">Merchant ID</label>
+                <input type="text" id="merchant-id" placeholder="Your merchant ID" required>
+            </div>
+
+            <div class="form-group">
+                <label for="order-ref">Order Reference</label>
+                <input type="text" id="order-ref" value="order-123" required>
+            </div>
+
+            <div class="form-group">
+                <label for="fiat-amount">Amount (USD)</label>
+                <input type="number" id="fiat-amount" step="0.01" value="100.00" required>
+            </div>
+
+            <div class="form-group">
+                <label for="network">Network</label>
+                <select id="network" required>
+                    <option value="TRC20">TRC20 (TRON)</option>
+                    <option value="ERC20">ERC20 (Ethereum)</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="customer-email">Customer Email (Optional)</label>
+                <input type="email" id="customer-email" placeholder="customer@example.com">
+            </div>
+
+            <button type="submit" id="create-intent-btn">Create Payment Intent</button>
+        </form>
+
+        <div id="payment-info" class="payment-info">
+            <div class="amount-section">
+                <div class="amount-label">Amount to pay:</div>
+                <div class="amount-value" id="crypto-amount">--</div>
+            </div>
+
+            <div class="address-section">
+                <div class="address-label">Send to address:</div>
+                <div class="address-box">
+                    <code id="payment-address">--</code>
+                    <button class="copy-btn" onclick="copyAddress()">Copy</button>
+                </div>
+            </div>
+
+            <div class="qr-section">
+                <img id="qr-code" class="qr-code" src="" alt="QR Code" style="display: none;">
+            </div>
+
+            <div class="countdown" id="countdown">--:--</div>
+
+            <div class="status-message pending" id="status-message">Waiting for payment...</div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL_KEY = 'cryptopay_api_base_url';
+        const API_KEY_KEY = 'cryptopay_api_key';
+        const MERCHANT_ID_KEY = 'cryptopay_merchant_id';
+
+        // Load saved values
+        if (localStorage.getItem(API_BASE_URL_KEY)) {
+            document.getElementById('api-base-url').value = localStorage.getItem(API_BASE_URL_KEY);
+        }
+        if (localStorage.getItem(API_KEY_KEY)) {
+            document.getElementById('api-key').value = localStorage.getItem(API_KEY_KEY);
+        }
+        if (localStorage.getItem(MERCHANT_ID_KEY)) {
+            document.getElementById('merchant-id').value = localStorage.getItem(MERCHANT_ID_KEY);
+        }
+
+        let intentId = null;
+        let expiresAt = null;
+        let pollInterval = null;
+
+        document.getElementById('checkout-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            // Save values
+            localStorage.setItem(API_BASE_URL_KEY, document.getElementById('api-base-url').value);
+            localStorage.setItem(API_KEY_KEY, document.getElementById('api-key').value);
+            localStorage.setItem(MERCHANT_ID_KEY, document.getElementById('merchant-id').value);
+
+            const apiBaseUrl = document.getElementById('api-base-url').value;
+            const apiKey = document.getElementById('api-key').value;
+            const merchantId = document.getElementById('merchant-id').value;
+            const orderRef = document.getElementById('order-ref').value;
+            const fiatAmount = parseFloat(document.getElementById('fiat-amount').value);
+            const network = document.getElementById('network').value;
+            const customerEmail = document.getElementById('customer-email').value;
+
+            const createBtn = document.getElementById('create-intent-btn');
+            createBtn.disabled = true;
+            createBtn.textContent = 'Creating...';
+
+            try {
+                const response = await fetch(`${apiBaseUrl}/v1/intents`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': apiKey
+                    },
+                    body: JSON.stringify({
+                        merchantId: merchantId,
+                        orderRef: orderRef,
+                        fiatCurrency: 'USD',
+                        fiatAmount: fiatAmount,
+                        cryptoCurrency: 'USDT',
+                        network: network,
+                        customerEmail: customerEmail || null,
+                        returnUrl: window.location.href
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.text();
+                    throw new Error(error || 'Failed to create payment intent');
+                }
+
+                const data = await response.json();
+                intentId = data.intentId;
+                expiresAt = new Date(data.expiresAt);
+
+                // Display payment info
+                document.getElementById('crypto-amount').textContent = `${data.cryptoAmount} USDT`;
+                document.getElementById('payment-address').textContent = data.payAddress;
+
+                if (data.qrString) {
+                    const qrImg = document.getElementById('qr-code');
+                    qrImg.src = `data:image/png;base64,${data.qrString}`;
+                    qrImg.style.display = 'block';
+                }
+
+                document.getElementById('payment-info').classList.add('active');
+                document.getElementById('checkout-form').style.display = 'none';
+
+                // Start polling
+                startPolling(apiBaseUrl, apiKey);
+                startCountdown();
+
+            } catch (error) {
+                alert('Error: ' + error.message);
+                createBtn.disabled = false;
+                createBtn.textContent = 'Create Payment Intent';
+            }
+        });
+
+        function startPolling(apiBaseUrl, apiKey) {
+            pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`${apiBaseUrl}/v1/intents/${intentId}`, {
+                        headers: {
+                            'X-API-Key': apiKey
+                        }
+                    });
+
+                    if (!response.ok) {
+                        return;
+                    }
+
+                    const data = await response.json();
+                    const status = data.status?.toUpperCase();
+
+                    if (status === 'PAID') {
+                        clearInterval(pollInterval);
+                        document.getElementById('status-message').textContent = 'Payment confirmed!';
+                        document.getElementById('status-message').className = 'status-message success';
+                        document.getElementById('countdown').textContent = 'Payment Complete';
+                    } else if (status === 'EXPIRED') {
+                        clearInterval(pollInterval);
+                        document.getElementById('status-message').textContent = 'Payment expired';
+                        document.getElementById('status-message').className = 'status-message error';
+                    } else if (status === 'FAILED') {
+                        clearInterval(pollInterval);
+                        document.getElementById('status-message').textContent = 'Payment failed';
+                        document.getElementById('status-message').className = 'status-message error';
+                    }
+
+                    if (data.expiresAt) {
+                        expiresAt = new Date(data.expiresAt);
+                    }
+                } catch (error) {
+                    console.error('Error polling:', error);
+                }
+            }, 10000); // Poll every 10 seconds
+        }
+
+        function startCountdown() {
+            setInterval(() => {
+                if (!expiresAt) return;
+
+                const now = new Date();
+                const diff = expiresAt - now;
+
+                if (diff <= 0) {
+                    document.getElementById('countdown').textContent = '00:00';
+                    return;
+                }
+
+                const minutes = Math.floor(diff / 60000);
+                const seconds = Math.floor((diff % 60000) / 1000);
+                document.getElementById('countdown').textContent = 
+                    `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+            }, 1000);
+        }
+
+        function copyAddress() {
+            const address = document.getElementById('payment-address').textContent;
+            navigator.clipboard.writeText(address).then(() => {
+                const btn = event.target;
+                const originalText = btn.textContent;
+                btn.textContent = 'Copied!';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                }, 2000);
+            });
+        }
+    </script>
+</body>
+</html>

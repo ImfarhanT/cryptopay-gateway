@@ -1,0 +1,30 @@
+# This file specifies files that are *not* uploaded to Google Cloud
+# using gcloud. It follows the same syntax as .gitignore
+
+.gcloudignore
+.git
+.gitignore
+.vs
+.vscode
+.idea
+*.user
+*.suo
+*.cache
+bin/
+obj/
+*.dbmdl
+*.jfm
+az.yaml
+azure-pipelines.yml
+charts/
+docker-compose*
+Dockerfile*
+node_modules/
+npm-debug.log
+secrets.dev.yaml
+values.dev.yaml
+README.md
+.env
+.env.local
+appsettings.Development.json
+*.log

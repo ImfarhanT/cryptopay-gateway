@@ -1,0 +1,164 @@
+{
+  "info": {
+    "name": "CryptoPay API",
+    "description": "API collection for CryptoPay payment gateway",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "your-api-key-here",
+      "type": "string"
+    },
+    {
+      "key": "merchantId",
+      "value": "your-merchant-id-here",
+      "type": "string"
+    },
+    {
+      "key": "intentId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "Create Payment Intent",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "    var jsonData = pm.response.json();",
+              "    pm.collectionVariables.set('intentId', jsonData.intentId);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"merchantId\": \"{{merchantId}}\",\n  \"orderRef\": \"order-{{$randomInt}}\",\n  \"fiatCurrency\": \"USD\",\n  \"fiatAmount\": 100.00,\n  \"cryptoCurrency\": \"USDT\",\n  \"network\": \"TRC20\",\n  \"customerEmail\": \"customer@example.com\",\n  \"returnUrl\": \"https://example.com/return\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/intents",
+          "host": ["{{baseUrl}}"],
+          "path": ["v1", "intents"]
+        }
+      }
+    },
+    {
+      "name": "Get Payment Intent",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/intents/{{intentId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["v1", "intents", "{{intentId}}"]
+        }
+      }
+    },
+    {
+      "name": "Create Payment Intent (ERC20)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "    var jsonData = pm.response.json();",
+              "    pm.collectionVariables.set('intentId', jsonData.intentId);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"merchantId\": \"{{merchantId}}\",\n  \"orderRef\": \"order-{{$randomInt}}\",\n  \"fiatCurrency\": \"USD\",\n  \"fiatAmount\": 50.00,\n  \"cryptoCurrency\": \"USDT\",\n  \"network\": \"ERC20\",\n  \"customerEmail\": \"customer@example.com\",\n  \"returnUrl\": \"https://example.com/return\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/intents",
+          "host": ["{{baseUrl}}"],
+          "path": ["v1", "intents"]
+        }
+      }
+    },
+    {
+      "name": "Seed Addresses (Admin)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"network\": \"TRC20\",\n  \"count\": 3,\n  \"addresses\": [\n    \"TTestAddress1\",\n    \"TTestAddress2\",\n    \"TTestAddress3\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/admin/seed-addresses",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "seed-addresses"]
+        },
+        "description": "⚠️ WARNING: This endpoint should be secured in production!"
+      }
+    }
+  ]
+}
