@@ -88,7 +88,7 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
             'api_base_url' => array(
                 'title' => 'Backend API Base URL',
                 'type' => 'text',
-                'description' => 'The base URL of the CryptoPay API (e.g., https://api.cryptopay.example.com)',
+                'description' => 'The base URL of the CryptoPay API',
                 'default' => '',
                 'required' => true,
             ),
@@ -116,11 +116,7 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
             'default_fiat_currency' => array(
                 'title' => 'Default Fiat Currency',
                 'type' => 'select',
-                'options' => array(
-                    'USD' => 'USD',
-                    'EUR' => 'EUR',
-                    'GBP' => 'GBP',
-                ),
+                'options' => array('USD' => 'USD', 'EUR' => 'EUR', 'GBP' => 'GBP'),
                 'default' => 'USD',
             ),
             'enable_trc20' => array(
@@ -141,92 +137,56 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
     public function process_payment($order_id)
     {
         $order = wc_get_order($order_id);
-
         if (!$order) {
-            return array(
-                'result' => 'fail',
-                'redirect' => '',
-            );
+            return array('result' => 'fail', 'redirect' => '');
         }
 
-        // Get selected network from form
         $network = isset($_POST['cryptopay_network']) ? sanitize_text_field($_POST['cryptopay_network']) : 'TRC20';
         
-        // Validate network selection
-        if ($network === 'TRC20' && $this->enable_trc20 !== 'yes') {
-            $network = 'ERC20';
-        }
-        if ($network === 'ERC20' && $this->enable_erc20 !== 'yes') {
-            $network = 'TRC20';
-        }
+        if ($network === 'TRC20' && $this->enable_trc20 !== 'yes') $network = 'ERC20';
+        if ($network === 'ERC20' && $this->enable_erc20 !== 'yes') $network = 'TRC20';
 
-        // Create payment intent
         $response = $this->create_payment_intent($order, $network);
 
         if (is_wp_error($response)) {
             wc_add_notice('Payment error: ' . $response->get_error_message(), 'error');
-            return array(
-                'result' => 'fail',
-                'redirect' => '',
-            );
+            return array('result' => 'fail', 'redirect' => '');
         }
 
         $response_code = wp_remote_retrieve_response_code($response);
         $response_body = wp_remote_retrieve_body($response);
         $intent_data = json_decode($response_body, true);
 
-        // Check for HTTP errors
         if ($response_code !== 200) {
             $error_message = isset($intent_data['detail']) ? $intent_data['detail'] : 
                             (isset($intent_data['title']) ? $intent_data['title'] : 'API Error: ' . $response_code);
             wc_add_notice('Payment error: ' . $error_message, 'error');
-            error_log('CryptoPay API Error: ' . $response_body);
-            return array(
-                'result' => 'fail',
-                'redirect' => '',
-            );
+            return array('result' => 'fail', 'redirect' => '');
         }
 
         if (!isset($intent_data['intentId'])) {
-            wc_add_notice('Failed to create payment intent: Invalid response from server', 'error');
-            error_log('CryptoPay Invalid Response: ' . $response_body);
-            return array(
-                'result' => 'fail',
-                'redirect' => '',
-            );
+            wc_add_notice('Failed to create payment intent', 'error');
+            return array('result' => 'fail', 'redirect' => '');
         }
 
-        // Store all payment data in order meta
         $order->update_meta_data('_cryptopay_intent_id', $intent_data['intentId']);
         $order->update_meta_data('_cryptopay_network', $network);
         $order->update_meta_data('_cryptopay_pay_address', $intent_data['payAddress']);
         $order->update_meta_data('_cryptopay_crypto_amount', $intent_data['cryptoAmount']);
         $order->update_meta_data('_cryptopay_qr_string', $intent_data['qrString'] ?? '');
         $order->update_meta_data('_cryptopay_expires_at', $intent_data['expiresAt']);
-        
-        // Keep order as pending-payment so receipt page works
         $order->update_status('pending', __('Awaiting crypto payment', 'cryptopay-woocommerce'));
         $order->save();
 
-        // Reduce stock levels
         wc_reduce_stock_levels($order_id);
-        
-        // Empty the cart
         WC()->cart->empty_cart();
 
-        // Redirect to order-pay page which triggers receipt_page
-        $payment_url = $order->get_checkout_payment_url(true);
-
-        return array(
-            'result' => 'success',
-            'redirect' => $payment_url,
-        );
+        return array('result' => 'success', 'redirect' => $order->get_checkout_payment_url(true));
     }
 
     private function create_payment_intent($order, $network)
     {
         $api_url = trailingslashit($this->api_base_url) . 'v1/intents';
-
         $body = array(
             'merchantId' => $this->merchant_id,
             'orderRef' => (string) $order->get_id(),
@@ -237,27 +197,18 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
             'customerEmail' => $order->get_billing_email(),
             'returnUrl' => $this->get_return_url($order),
         );
-
-        $args = array(
+        return wp_remote_post($api_url, array(
             'method' => 'POST',
-            'headers' => array(
-                'Content-Type' => 'application/json',
-                'X-API-Key' => $this->api_key,
-            ),
+            'headers' => array('Content-Type' => 'application/json', 'X-API-Key' => $this->api_key),
             'body' => json_encode($body),
             'timeout' => 30,
-        );
-
-        return wp_remote_post($api_url, $args);
+        ));
     }
 
     public function receipt_page($order_id)
     {
         $order = wc_get_order($order_id);
-        if (!$order) {
-            echo '<p>Order not found.</p>';
-            return;
-        }
+        if (!$order) { echo '<p>Order not found.</p>'; return; }
 
         $intent_id = $order->get_meta('_cryptopay_intent_id');
         $pay_address = $order->get_meta('_cryptopay_pay_address');
@@ -272,54 +223,141 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
         }
         ?>
         <style>
-            .cryptopay-payment { max-width: 500px; margin: 20px auto; padding: 30px; text-align: center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; border-radius: 12px; }
-            .cryptopay-payment h2 { margin: 0 0 25px; color: #1a1a2e; font-size: 24px; }
-            .cryptopay-amount-box { background: #fff; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-            .cryptopay-amount-label { font-size: 14px; color: #666; margin-bottom: 5px; }
-            .cryptopay-amount { font-size: 32px; font-weight: 700; color: #27ae60; }
-            .cryptopay-address-box { background: #fff; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-            .cryptopay-address { font-family: 'Courier New', monospace; font-size: 13px; word-break: break-all; background: #f1f3f4; padding: 12px; border-radius: 6px; margin: 10px 0; border: 1px solid #e0e0e0; }
-            .cryptopay-copy-btn { padding: 12px 24px; background: #4CAF50; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background 0.2s; }
-            .cryptopay-copy-btn:hover { background: #45a049; }
-            .cryptopay-qr { margin: 20px 0; }
-            .cryptopay-qr img { max-width: 200px; border: 1px solid #e0e0e0; padding: 10px; background: white; border-radius: 8px; }
-            .cryptopay-timer { background: #fff3cd; padding: 15px; border-radius: 8px; margin: 20px 0; }
-            .cryptopay-timer-label { font-size: 14px; color: #856404; }
-            .cryptopay-countdown { font-size: 28px; font-weight: 700; color: #856404; }
-            .cryptopay-status { padding: 15px; border-radius: 8px; margin-top: 20px; background: #e3f2fd; color: #1565c0; font-weight: 500; }
-            .cryptopay-status.paid { background: #d4edda; color: #155724; }
-            .cryptopay-status.expired { background: #f8d7da; color: #721c24; }
-            .cryptopay-network-badge { display: inline-block; background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; margin-bottom: 15px; }
+            .cpay-wrap { max-width: 600px; margin: 0 auto; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+            .cpay-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 24px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+            .cpay-header { text-align: center; padding-bottom: 20px; border-bottom: 1px solid #e5e7eb; margin-bottom: 20px; }
+            .cpay-title { font-size: 24px; font-weight: 700; color: #1f2937; margin: 0 0 8px; }
+            .cpay-badge { display: inline-block; background: #ecfdf5; color: #059669; padding: 6px 12px; border-radius: 20px; font-size: 13px; font-weight: 600; }
+            
+            .cpay-amount-section { text-align: center; padding: 20px 0; }
+            .cpay-amount-label { font-size: 14px; color: #6b7280; margin-bottom: 8px; }
+            .cpay-amount { font-size: 42px; font-weight: 700; color: #059669; }
+            .cpay-amount span { font-size: 20px; color: #6b7280; margin-left: 8px; }
+            
+            .cpay-alert { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px; }
+            .cpay-alert-icon { font-size: 20px; }
+            .cpay-alert-text { font-size: 13px; color: #92400e; line-height: 1.5; }
+            
+            .cpay-address-section { margin-bottom: 20px; }
+            .cpay-label { font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+            .cpay-address-box { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; position: relative; }
+            .cpay-address { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 14px; color: #1f2937; word-break: break-all; line-height: 1.6; margin: 0 0 12px; }
+            .cpay-copy-btn { width: 100%; background: #059669; color: #fff; border: none; border-radius: 8px; padding: 12px 20px; font-size: 15px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.2s; }
+            .cpay-copy-btn:hover { background: #047857; }
+            .cpay-copy-btn.copied { background: #10b981; }
+            
+            .cpay-qr-section { text-align: center; padding: 20px 0; }
+            .cpay-qr-box { display: inline-block; background: #fff; border: 2px solid #e5e7eb; border-radius: 12px; padding: 16px; }
+            .cpay-qr-box img { width: 180px; height: 180px; display: block; }
+            .cpay-qr-hint { font-size: 13px; color: #6b7280; margin-top: 12px; }
+            
+            .cpay-timer-section { text-align: center; background: #fef3c7; border: 1px solid #fcd34d; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+            .cpay-timer-label { font-size: 13px; color: #92400e; margin-bottom: 4px; }
+            .cpay-timer { font-size: 36px; font-weight: 700; color: #b45309; font-variant-numeric: tabular-nums; }
+            
+            .cpay-status { text-align: center; border-radius: 8px; padding: 20px; }
+            .cpay-status.waiting { background: #eff6ff; border: 1px solid #bfdbfe; }
+            .cpay-status.paid { background: #ecfdf5; border: 1px solid #a7f3d0; }
+            .cpay-status.expired { background: #fef2f2; border: 1px solid #fecaca; }
+            .cpay-status-text { font-size: 16px; font-weight: 600; margin: 0; }
+            .cpay-status.waiting .cpay-status-text { color: #1d4ed8; }
+            .cpay-status.paid .cpay-status-text { color: #059669; }
+            .cpay-status.expired .cpay-status-text { color: #dc2626; }
+            .cpay-status-hint { font-size: 13px; color: #6b7280; margin-top: 8px; }
+            
+            .cpay-spinner { width: 24px; height: 24px; border: 3px solid #bfdbfe; border-top-color: #1d4ed8; border-radius: 50%; animation: cpay-spin 1s linear infinite; margin: 0 auto 12px; }
+            @keyframes cpay-spin { to { transform: rotate(360deg); } }
+            
+            .cpay-steps { padding-top: 20px; border-top: 1px solid #e5e7eb; }
+            .cpay-steps-title { font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 16px; }
+            .cpay-step { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+            .cpay-step-num { width: 28px; height: 28px; background: #f3f4f6; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: #374151; flex-shrink: 0; }
+            .cpay-step-text { font-size: 14px; color: #4b5563; line-height: 1.5; padding-top: 4px; }
+            
+            /* Desktop Layout */
+            @media (min-width: 768px) {
+                .cpay-wrap { max-width: 700px; padding: 40px 20px; }
+                .cpay-card { padding: 32px; }
+                .cpay-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+                .cpay-qr-section { padding: 0; }
+                .cpay-title { font-size: 28px; }
+                .cpay-amount { font-size: 48px; }
+            }
         </style>
 
-        <div class="cryptopay-payment">
-            <h2>💰 Pay with USDT</h2>
-            <span class="cryptopay-network-badge"><?php echo esc_html($network); ?> Network</span>
-            
-            <div class="cryptopay-amount-box">
-                <div class="cryptopay-amount-label">Amount to send:</div>
-                <div class="cryptopay-amount"><?php echo esc_html(number_format((float)$crypto_amount, 6)); ?> USDT</div>
+        <div class="cpay-wrap">
+            <div class="cpay-card">
+                <div class="cpay-header">
+                    <h1 class="cpay-title">Complete Your Payment</h1>
+                    <span class="cpay-badge">💎 <?php echo esc_html($network); ?> Network</span>
+                </div>
+                
+                <div class="cpay-amount-section">
+                    <div class="cpay-amount-label">Send exactly this amount</div>
+                    <div class="cpay-amount"><?php echo esc_html(number_format((float)$crypto_amount, 2)); ?><span>USDT</span></div>
+                </div>
+                
+                <div class="cpay-alert">
+                    <span class="cpay-alert-icon">⚠️</span>
+                    <span class="cpay-alert-text"><strong>Important:</strong> Send the exact amount shown. Sending a different amount may delay your order.</span>
+                </div>
+                
+                <div class="cpay-grid">
+                    <div>
+                        <div class="cpay-address-section">
+                            <div class="cpay-label">Send to this address</div>
+                            <div class="cpay-address-box">
+                                <p class="cpay-address" id="payAddress"><?php echo esc_html($pay_address); ?></p>
+                                <button class="cpay-copy-btn" id="copyBtn" onclick="copyAddr()">
+                                    <span id="copyIcon">📋</span>
+                                    <span id="copyText">Copy Address</span>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="cpay-timer-section">
+                            <div class="cpay-timer-label">⏱️ Time remaining</div>
+                            <div class="cpay-timer" id="timer">--:--</div>
+                        </div>
+                    </div>
+                    
+                    <?php if ($qr_string): ?>
+                    <div class="cpay-qr-section">
+                        <div class="cpay-qr-box">
+                            <img src="data:image/png;base64,<?php echo esc_attr($qr_string); ?>" alt="QR Code">
+                        </div>
+                        <p class="cpay-qr-hint">Scan with your wallet app</p>
+                    </div>
+                    <?php endif; ?>
+                </div>
+                
+                <div class="cpay-status waiting" id="statusBox">
+                    <div class="cpay-spinner" id="spinner"></div>
+                    <p class="cpay-status-text" id="statusText">⏳ Waiting for your payment...</p>
+                    <p class="cpay-status-hint" id="statusHint">We'll detect it automatically once sent</p>
+                </div>
             </div>
             
-            <div class="cryptopay-address-box">
-                <div class="cryptopay-amount-label">Send to this address:</div>
-                <div class="cryptopay-address" id="pay-address"><?php echo esc_html($pay_address); ?></div>
-                <button class="cryptopay-copy-btn" onclick="cryptopayCopyAddress()">📋 Copy Address</button>
-            </div>
-            
-            <?php if ($qr_string): ?>
-            <div class="cryptopay-qr">
-                <img src="data:image/png;base64,<?php echo esc_attr($qr_string); ?>" alt="QR Code">
-            </div>
-            <?php endif; ?>
-            
-            <div class="cryptopay-timer">
-                <div class="cryptopay-timer-label">⏳ Time remaining:</div>
-                <div class="cryptopay-countdown" id="cryptopay-countdown">--:--</div>
-            </div>
-            
-            <div class="cryptopay-status" id="cryptopay-status">
-                Waiting for payment...
+            <div class="cpay-card">
+                <div class="cpay-steps">
+                    <div class="cpay-steps-title">📝 How to complete your payment</div>
+                    <div class="cpay-step">
+                        <span class="cpay-step-num">1</span>
+                        <span class="cpay-step-text">Open your crypto wallet (TronLink, Trust Wallet, Binance, etc.)</span>
+                    </div>
+                    <div class="cpay-step">
+                        <span class="cpay-step-num">2</span>
+                        <span class="cpay-step-text">Send exactly <strong><?php echo esc_html(number_format((float)$crypto_amount, 2)); ?> USDT</strong> to the address above</span>
+                    </div>
+                    <div class="cpay-step">
+                        <span class="cpay-step-num">3</span>
+                        <span class="cpay-step-text">Wait 1-2 minutes for blockchain confirmation</span>
+                    </div>
+                    <div class="cpay-step">
+                        <span class="cpay-step-num">4</span>
+                        <span class="cpay-step-text">You'll be redirected automatically once payment is confirmed</span>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -331,49 +369,55 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
             var returnUrl = '<?php echo esc_js($this->get_return_url($order)); ?>';
             var expiresAt = new Date('<?php echo esc_js($expires_at); ?>');
             
-            window.cryptopayCopyAddress = function() {
-                var address = document.getElementById('pay-address').textContent;
-                navigator.clipboard.writeText(address).then(function() {
-                    var btn = event.target;
-                    btn.textContent = '✅ Copied!';
-                    setTimeout(function() { btn.textContent = '📋 Copy Address'; }, 2000);
+            window.copyAddr = function() {
+                var addr = document.getElementById('payAddress').textContent;
+                navigator.clipboard.writeText(addr).then(function() {
+                    var btn = document.getElementById('copyBtn');
+                    document.getElementById('copyIcon').textContent = '✓';
+                    document.getElementById('copyText').textContent = 'Copied!';
+                    btn.classList.add('copied');
+                    setTimeout(function() {
+                        document.getElementById('copyIcon').textContent = '📋';
+                        document.getElementById('copyText').textContent = 'Copy Address';
+                        btn.classList.remove('copied');
+                    }, 2000);
                 });
             };
             
-            function updateCountdown() {
+            function updateTimer() {
                 var now = new Date();
                 var diff = expiresAt - now;
                 if (diff <= 0) {
-                    document.getElementById('cryptopay-countdown').textContent = 'EXPIRED';
-                    document.getElementById('cryptopay-status').textContent = 'Payment expired. Please create a new order.';
-                    document.getElementById('cryptopay-status').className = 'cryptopay-status expired';
+                    document.getElementById('timer').textContent = 'EXPIRED';
+                    document.getElementById('statusBox').className = 'cpay-status expired';
+                    document.getElementById('spinner').style.display = 'none';
+                    document.getElementById('statusText').textContent = '❌ Payment time expired';
+                    document.getElementById('statusHint').textContent = 'Please place a new order to try again';
                     return;
                 }
-                var minutes = Math.floor(diff / 60000);
-                var seconds = Math.floor((diff % 60000) / 1000);
-                document.getElementById('cryptopay-countdown').textContent = 
-                    String(minutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0');
+                var m = Math.floor(diff / 60000);
+                var s = Math.floor((diff % 60000) / 1000);
+                document.getElementById('timer').textContent = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
             }
             
-            function checkStatus() {
-                fetch(apiUrl + '/v1/intents/' + intentId, {
-                    headers: { 'X-API-Key': apiKey }
-                })
+            function checkPayment() {
+                fetch(apiUrl + '/v1/intents/' + intentId, { headers: { 'X-API-Key': apiKey } })
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     if (data.status === 'PAID') {
-                        document.getElementById('cryptopay-status').textContent = '✅ Payment confirmed! Redirecting...';
-                        document.getElementById('cryptopay-status').className = 'cryptopay-status paid';
-                        setTimeout(function() { window.location.href = returnUrl; }, 2000);
+                        document.getElementById('statusBox').className = 'cpay-status paid';
+                        document.getElementById('spinner').style.display = 'none';
+                        document.getElementById('statusText').textContent = '✅ Payment confirmed!';
+                        document.getElementById('statusHint').textContent = 'Redirecting to your order...';
+                        setTimeout(function() { window.location.href = returnUrl; }, 2500);
                     }
-                })
-                .catch(function(err) { console.log('Status check error:', err); });
+                }).catch(function() {});
             }
             
-            setInterval(updateCountdown, 1000);
-            setInterval(checkStatus, 5000);
-            updateCountdown();
-            setTimeout(checkStatus, 1000);
+            setInterval(updateTimer, 1000);
+            setInterval(checkPayment, 5000);
+            updateTimer();
+            setTimeout(checkPayment, 1000);
         })();
         </script>
         <?php
@@ -382,15 +426,9 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
     public function thankyou_page($order_id)
     {
         $order = wc_get_order($order_id);
-        if (!$order) {
-            return;
-        }
-
+        if (!$order) return;
         $intent_id = $order->get_meta('_cryptopay_intent_id');
-        if (empty($intent_id)) {
-            return;
-        }
-
-        echo '<p style="padding: 15px; background: #d4edda; color: #155724; border-radius: 8px;">✅ ' . esc_html__('Your crypto payment has been received! Your order is being processed.', 'cryptopay-woocommerce') . '</p>';
+        if (empty($intent_id)) return;
+        echo '<div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:16px;margin:20px 0;"><p style="margin:0;color:#059669;font-weight:600;">✅ Your crypto payment has been received! Your order is being processed.</p></div>';
     }
 }

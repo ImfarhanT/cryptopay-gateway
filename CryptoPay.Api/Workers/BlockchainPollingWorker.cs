@@ -28,7 +28,8 @@ public class BlockchainPollingWorker : BackgroundService
         {
             try
             {
-                await CheckPendingPaymentsAsync();
+                await CheckTrc20PaymentsAsync();
+                await CheckErc20PaymentsAsync();
                 await ExpireOldIntentsAsync();
             }
             catch (Exception ex)
@@ -40,7 +41,7 @@ public class BlockchainPollingWorker : BackgroundService
         }
     }
 
-    private async Task CheckPendingPaymentsAsync()
+    private async Task CheckTrc20PaymentsAsync()
     {
         using var scope = _serviceProvider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -62,11 +63,9 @@ public class BlockchainPollingWorker : BackgroundService
 
         _logger.LogInformation("Checking {Count} pending TRC20 payments", pendingIntents.Count);
 
-        // Get oldest pending intent timestamp for filtering transactions
         var oldestIntent = pendingIntents.MinBy(pi => pi.CreatedAt);
         var sinceTimestamp = ((DateTimeOffset)(oldestIntent?.CreatedAt ?? DateTime.UtcNow.AddHours(-1))).ToUnixTimeMilliseconds();
 
-        // Get recent transactions from TronGrid
         var payAddress = tronService.GetPaymentAddress();
         var transactions = await tronService.GetTrc20TransactionsAsync(payAddress, sinceTimestamp);
 
@@ -74,26 +73,84 @@ public class BlockchainPollingWorker : BackgroundService
 
         foreach (var intent in pendingIntents)
         {
-            // Look for a transaction matching this intent's unique amount
             var matchingTx = transactions.FirstOrDefault(tx =>
                 tx.ToAddress.Equals(intent.PayAddress, StringComparison.OrdinalIgnoreCase) &&
-                Math.Abs(tx.Amount - intent.CryptoAmount) < 0.01m && // Tolerance for rounding
+                Math.Abs(tx.Amount - intent.CryptoAmount) < 0.01m &&
                 tx.Timestamp >= ((DateTimeOffset)intent.CreatedAt).ToUnixTimeMilliseconds());
 
             if (matchingTx != null)
             {
-                _logger.LogInformation("Found payment for intent {IntentId}: {TxHash} - {Amount} USDT",
+                _logger.LogInformation("Found TRC20 payment for intent {IntentId}: {TxHash} - {Amount} USDT",
                     intent.Id, matchingTx.TxHash, matchingTx.Amount);
 
-                // Update intent status
                 intent.Status = PaymentIntentStatus.Paid;
                 intent.TxHash = matchingTx.TxHash;
                 intent.PaidAt = DateTime.UtcNow;
-                intent.Confirmations = 1; // TRC20 confirms fast
+                intent.Confirmations = 1;
 
                 await db.SaveChangesAsync();
 
-                // Send webhook notification
+                try
+                {
+                    await webhookService.SendWebhookAsync(intent);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to send webhook for intent {IntentId}", intent.Id);
+                }
+            }
+        }
+    }
+
+    private async Task CheckErc20PaymentsAsync()
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var ethereumService = scope.ServiceProvider.GetRequiredService<EthereumService>();
+        var webhookService = scope.ServiceProvider.GetRequiredService<WebhookService>();
+
+        // Get all pending ERC20 intents
+        var pendingIntents = await db.PaymentIntents
+            .Include(pi => pi.Merchant)
+            .Where(pi => pi.Status == PaymentIntentStatus.Pending && 
+                        pi.Network == "ERC20" &&
+                        pi.ExpiresAt > DateTime.UtcNow)
+            .ToListAsync();
+
+        if (!pendingIntents.Any())
+        {
+            return;
+        }
+
+        _logger.LogInformation("Checking {Count} pending ERC20 payments", pendingIntents.Count);
+
+        var oldestIntent = pendingIntents.MinBy(pi => pi.CreatedAt);
+        var sinceTimestamp = ((DateTimeOffset)(oldestIntent?.CreatedAt ?? DateTime.UtcNow.AddHours(-1))).ToUnixTimeMilliseconds();
+
+        var payAddress = ethereumService.GetPaymentAddress();
+        var transactions = await ethereumService.GetErc20TransactionsAsync(payAddress, sinceTimestamp);
+
+        _logger.LogInformation("Found {Count} recent ERC20 transactions", transactions.Count);
+
+        foreach (var intent in pendingIntents)
+        {
+            var matchingTx = transactions.FirstOrDefault(tx =>
+                tx.ToAddress.Equals(intent.PayAddress, StringComparison.OrdinalIgnoreCase) &&
+                Math.Abs(tx.Amount - intent.CryptoAmount) < 0.01m &&
+                tx.Timestamp >= ((DateTimeOffset)intent.CreatedAt).ToUnixTimeMilliseconds());
+
+            if (matchingTx != null)
+            {
+                _logger.LogInformation("Found ERC20 payment for intent {IntentId}: {TxHash} - {Amount} USDT",
+                    intent.Id, matchingTx.TxHash, matchingTx.Amount);
+
+                intent.Status = PaymentIntentStatus.Paid;
+                intent.TxHash = matchingTx.TxHash;
+                intent.PaidAt = DateTime.UtcNow;
+                intent.Confirmations = matchingTx.Confirmations > 0 ? matchingTx.Confirmations : 1;
+
+                await db.SaveChangesAsync();
+
                 try
                 {
                     await webhookService.SendWebhookAsync(intent);

@@ -13,8 +13,9 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// Register TronService for blockchain operations
+// Register blockchain services
 builder.Services.AddSingleton<TronService>();
+builder.Services.AddSingleton<EthereumService>();
 builder.Services.AddScoped<PaymentIntentService>();
 builder.Services.AddScoped<WebhookService>();
 builder.Services.AddHttpClient();
@@ -127,19 +128,42 @@ app.MapGet("/admin/pending-payments", async (ApplicationDbContext db) =>
     return Results.Ok(pending);
 });
 
-app.MapGet("/admin/check-payment/{intentId}", async (Guid intentId, ApplicationDbContext db, TronService tronService) =>
+app.MapGet("/admin/check-payment/{intentId}", async (Guid intentId, ApplicationDbContext db, TronService tronService, EthereumService ethereumService) =>
 {
     var intent = await db.PaymentIntents.FindAsync(intentId);
     if (intent == null) return Results.NotFound();
 
     var sinceTimestamp = ((DateTimeOffset)intent.CreatedAt).ToUnixTimeMilliseconds();
-    var tx = await tronService.FindPaymentByAmountAsync(intent.CryptoAmount, sinceTimestamp);
     
-    if (tx != null)
+    if (intent.Network == "TRC20")
     {
-        return Results.Ok(new { found = true, tx.TxHash, tx.Amount, tx.FromAddress });
+        var tx = await tronService.FindPaymentByAmountAsync(intent.CryptoAmount, sinceTimestamp);
+        if (tx != null)
+        {
+            return Results.Ok(new { found = true, network = "TRC20", tx.TxHash, tx.Amount, tx.FromAddress });
+        }
     }
-    return Results.Ok(new { found = false, expectedAmount = intent.CryptoAmount });
+    else if (intent.Network == "ERC20")
+    {
+        var tx = await ethereumService.FindPaymentByAmountAsync(intent.CryptoAmount, sinceTimestamp);
+        if (tx != null)
+        {
+            return Results.Ok(new { found = true, network = "ERC20", tx.TxHash, tx.Amount, tx.FromAddress });
+        }
+    }
+    
+    return Results.Ok(new { found = false, network = intent.Network, expectedAmount = intent.CryptoAmount });
+});
+
+app.MapGet("/admin/config", (TronService tronService, EthereumService ethereumService) =>
+{
+    return Results.Ok(new 
+    { 
+        trc20Address = tronService.GetPaymentAddress(),
+        erc20Address = ethereumService.GetPaymentAddress(),
+        trc20Configured = !string.IsNullOrEmpty(tronService.GetPaymentAddress()),
+        erc20Configured = !string.IsNullOrEmpty(ethereumService.GetPaymentAddress())
+    });
 });
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));

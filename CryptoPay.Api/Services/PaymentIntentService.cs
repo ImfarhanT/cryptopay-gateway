@@ -11,17 +11,20 @@ public class PaymentIntentService
     private readonly ApplicationDbContext _db;
     private readonly ILogger<PaymentIntentService> _logger;
     private readonly TronService _tronService;
+    private readonly EthereumService _ethereumService;
     private readonly IConfiguration _configuration;
 
     public PaymentIntentService(
         ApplicationDbContext db,
         ILogger<PaymentIntentService> logger,
         TronService tronService,
+        EthereumService ethereumService,
         IConfiguration configuration)
     {
         _db = db;
         _logger = logger;
         _tronService = tronService;
+        _ethereumService = ethereumService;
         _configuration = configuration;
     }
 
@@ -45,22 +48,27 @@ public class PaymentIntentService
             return MapToCreateResponse(existingIntent);
         }
 
-        // Get payment address from TronService
-        var payAddress = _tronService.GetPaymentAddress();
+        // Get payment address based on network
+        var payAddress = GetPaymentAddressForNetwork(request.Network);
+        
+        if (string.IsNullOrEmpty(payAddress))
+        {
+            throw new InvalidOperationException($"No admin address configured for {request.Network} network");
+        }
 
         // Calculate crypto amount with unique identifier
         var baseCryptoAmount = await CalculateCryptoAmountAsync(request.FiatAmount, request.FiatCurrency, request.CryptoCurrency);
         
         // Make amount unique by adding random cents (for payment identification)
-        var uniqueCryptoAmount = _tronService.GenerateUniqueAmount(baseCryptoAmount);
+        var uniqueCryptoAmount = GenerateUniqueAmountForNetwork(baseCryptoAmount, request.Network);
         
-        // Ensure this exact amount isn't already pending
+        // Ensure this exact amount isn't already pending for this network
         while (await _db.PaymentIntents.AnyAsync(pi => 
             pi.Status == PaymentIntentStatus.Pending && 
             pi.CryptoAmount == uniqueCryptoAmount &&
             pi.Network == request.Network))
         {
-            uniqueCryptoAmount = _tronService.GenerateUniqueAmount(baseCryptoAmount);
+            uniqueCryptoAmount = GenerateUniqueAmountForNetwork(baseCryptoAmount, request.Network);
         }
 
         // Create intent
@@ -85,10 +93,30 @@ public class PaymentIntentService
         _db.PaymentIntents.Add(intent);
         await _db.SaveChangesAsync();
 
-        _logger.LogInformation("Created payment intent {IntentId} for {Amount} USDT to {Address}", 
-            intent.Id, uniqueCryptoAmount, payAddress);
+        _logger.LogInformation("Created payment intent {IntentId} for {Amount} USDT ({Network}) to {Address}", 
+            intent.Id, uniqueCryptoAmount, request.Network, payAddress);
 
         return MapToCreateResponse(intent);
+    }
+
+    private string GetPaymentAddressForNetwork(string network)
+    {
+        return network.ToUpperInvariant() switch
+        {
+            "TRC20" => _tronService.GetPaymentAddress(),
+            "ERC20" => _ethereumService.GetPaymentAddress(),
+            _ => _tronService.GetPaymentAddress() // Default to TRC20
+        };
+    }
+
+    private decimal GenerateUniqueAmountForNetwork(decimal baseAmount, string network)
+    {
+        return network.ToUpperInvariant() switch
+        {
+            "TRC20" => _tronService.GenerateUniqueAmount(baseAmount),
+            "ERC20" => _ethereumService.GenerateUniqueAmount(baseAmount),
+            _ => _tronService.GenerateUniqueAmount(baseAmount)
+        };
     }
 
     public async Task<GetIntentResponse?> GetIntentAsync(Guid intentId, string apiKey)
@@ -148,8 +176,6 @@ public class PaymentIntentService
 
     private async Task<decimal> CalculateCryptoAmountAsync(decimal fiatAmount, string fiatCurrency, string cryptoCurrency)
     {
-        // For USDT, it's 1:1 with USD
-        // For other currencies, you'd integrate with an exchange rate API
         var rate = _configuration.GetValue<decimal>($"ExchangeRates:{fiatCurrency}:{cryptoCurrency}", 1.0m);
         await Task.CompletedTask;
         return fiatAmount / rate;
