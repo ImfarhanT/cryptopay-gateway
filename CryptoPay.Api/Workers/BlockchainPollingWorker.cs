@@ -96,7 +96,7 @@ public class BlockchainPollingWorker : BackgroundService
                 // Send webhook notification
                 try
                 {
-                    await webhookService.SendPaymentConfirmedWebhookAsync(intent);
+                    await webhookService.SendWebhookAsync(intent);
                 }
                 catch (Exception ex)
                 {
