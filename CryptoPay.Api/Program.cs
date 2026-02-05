@@ -166,6 +166,26 @@ app.MapGet("/admin/config", (TronService tronService, EthereumService ethereumSe
     });
 });
 
+// Update merchant webhook
+app.MapPost("/admin/update-merchant-webhook", async (UpdateWebhookRequest request, ApplicationDbContext db) =>
+{
+    var merchant = await db.Merchants.FindAsync(request.MerchantId);
+    if (merchant == null) return Results.NotFound("Merchant not found");
+    
+    merchant.WebhookUrl = request.WebhookUrl;
+    merchant.WebhookSecret = request.WebhookSecret;
+    await db.SaveChangesAsync();
+    
+    return Results.Ok(new { message = "Webhook updated", merchant.Id, merchant.WebhookUrl });
+});
+
+app.MapGet("/admin/merchant/{id}", async (Guid id, ApplicationDbContext db) =>
+{
+    var merchant = await db.Merchants.FindAsync(id);
+    if (merchant == null) return Results.NotFound();
+    return Results.Ok(new { merchant.Id, merchant.Name, merchant.ApiKey, merchant.WebhookUrl, merchant.WebhookSecret, merchant.IsActive });
+});
+
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
 
 // Cloud Run uses PORT environment variable
@@ -173,3 +193,4 @@ var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 app.Run($"http://0.0.0.0:{port}");
 
 public record CreateMerchantRequest(string Name, string ApiKey, string WebhookUrl, string WebhookSecret);
+public record UpdateWebhookRequest(Guid MerchantId, string WebhookUrl, string WebhookSecret);
