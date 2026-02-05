@@ -10,18 +10,18 @@ public class PaymentIntentService
 {
     private readonly ApplicationDbContext _db;
     private readonly ILogger<PaymentIntentService> _logger;
-    private readonly BlockchainProviderFactory _providerFactory;
+    private readonly TronService _tronService;
     private readonly IConfiguration _configuration;
 
     public PaymentIntentService(
         ApplicationDbContext db,
         ILogger<PaymentIntentService> logger,
-        BlockchainProviderFactory providerFactory,
+        TronService tronService,
         IConfiguration configuration)
     {
         _db = db;
         _logger = logger;
-        _providerFactory = providerFactory;
+        _tronService = tronService;
         _configuration = configuration;
     }
 
@@ -45,15 +45,23 @@ public class PaymentIntentService
             return MapToCreateResponse(existingIntent);
         }
 
-        // Get available address
-        var address = await GetAvailableAddressAsync(request.Network);
-        if (address == null)
-        {
-            throw new InvalidOperationException($"No available addresses for network {request.Network}");
-        }
+        // Get payment address from TronService
+        var payAddress = _tronService.GetPaymentAddress();
 
-        // Calculate crypto amount (simplified - in production, use real-time exchange rates)
-        var cryptoAmount = await CalculateCryptoAmountAsync(request.FiatAmount, request.FiatCurrency, request.CryptoCurrency);
+        // Calculate crypto amount with unique identifier
+        var baseCryptoAmount = await CalculateCryptoAmountAsync(request.FiatAmount, request.FiatCurrency, request.CryptoCurrency);
+        
+        // Make amount unique by adding random cents (for payment identification)
+        var uniqueCryptoAmount = _tronService.GenerateUniqueAmount(baseCryptoAmount);
+        
+        // Ensure this exact amount isn't already pending
+        while (await _db.PaymentIntents.AnyAsync(pi => 
+            pi.Status == PaymentIntentStatus.Pending && 
+            pi.CryptoAmount == uniqueCryptoAmount &&
+            pi.Network == request.Network))
+        {
+            uniqueCryptoAmount = _tronService.GenerateUniqueAmount(baseCryptoAmount);
+        }
 
         // Create intent
         var intent = new PaymentIntent
@@ -68,18 +76,17 @@ public class PaymentIntentService
             CustomerEmail = request.CustomerEmail,
             ReturnUrl = request.ReturnUrl,
             Status = PaymentIntentStatus.Pending,
-            PayAddress = address.Address,
-            CryptoAmount = cryptoAmount,
-            ExpiresAt = DateTime.UtcNow.AddMinutes(30) // 30 minute expiry
+            PayAddress = payAddress,
+            CryptoAmount = uniqueCryptoAmount,
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(30)
         };
-
-        address.IsAssigned = true;
-        address.PaymentIntentId = intent.Id;
 
         _db.PaymentIntents.Add(intent);
         await _db.SaveChangesAsync();
 
-        _logger.LogInformation("Created payment intent {IntentId} for merchant {MerchantId}", intent.Id, merchant.Id);
+        _logger.LogInformation("Created payment intent {IntentId} for {Amount} USDT to {Address}", 
+            intent.Id, uniqueCryptoAmount, payAddress);
 
         return MapToCreateResponse(intent);
     }
@@ -109,7 +116,7 @@ public class PaymentIntentService
 
     private CreateIntentResponse MapToCreateResponse(PaymentIntent intent)
     {
-        var qrString = GenerateQrCode(intent.PayAddress, intent.CryptoAmount, intent.Network);
+        var qrString = GenerateQrCode(intent.PayAddress);
         
         return new CreateIntentResponse
         {
@@ -122,42 +129,27 @@ public class PaymentIntentService
         };
     }
 
-    private string GenerateQrCode(string address, decimal amount, string network)
+    private string GenerateQrCode(string address)
     {
-        // Generate payment URI based on network
-        string uri;
-        if (network.Equals("TRC20", StringComparison.OrdinalIgnoreCase))
+        try
         {
-            // TRON payment URI format
-            uri = $"tron:{address}?amount={amount}";
+            using var qrGenerator = new QRCodeGenerator();
+            var qrCodeData = qrGenerator.CreateQrCode(address, QRCodeGenerator.ECCLevel.M);
+            using var qrCode = new PngByteQRCode(qrCodeData);
+            var qrCodeBytes = qrCode.GetGraphic(10);
+            return Convert.ToBase64String(qrCodeBytes);
         }
-        else if (network.Equals("ERC20", StringComparison.OrdinalIgnoreCase))
+        catch (Exception ex)
         {
-            // Ethereum payment URI format
-            uri = $"ethereum:{address}?value={amount}";
+            _logger.LogError(ex, "Error generating QR code");
+            return "";
         }
-        else
-        {
-            uri = address;
-        }
-
-        using var qrGenerator = new QRCodeGenerator();
-        var qrCodeData = qrGenerator.CreateQrCode(uri, QRCodeGenerator.ECCLevel.Q);
-        using var qrCode = new PngByteQRCode(qrCodeData);
-        var qrCodeBytes = qrCode.GetGraphic(20);
-        return Convert.ToBase64String(qrCodeBytes);
-    }
-
-    private async Task<WalletAddress?> GetAvailableAddressAsync(string network)
-    {
-        return await _db.WalletAddresses
-            .FirstOrDefaultAsync(wa => wa.Network == network && !wa.IsAssigned);
     }
 
     private async Task<decimal> CalculateCryptoAmountAsync(decimal fiatAmount, string fiatCurrency, string cryptoCurrency)
     {
-        // TODO: Integrate with exchange rate API (e.g., CoinGecko, Binance)
-        // For MVP, use a hardcoded rate or configuration
+        // For USDT, it's 1:1 with USD
+        // For other currencies, you'd integrate with an exchange rate API
         var rate = _configuration.GetValue<decimal>($"ExchangeRates:{fiatCurrency}:{cryptoCurrency}", 1.0m);
         await Task.CompletedTask;
         return fiatAmount / rate;

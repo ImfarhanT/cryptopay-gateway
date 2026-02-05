@@ -6,11 +6,12 @@
         apiKey: cryptopayData.apiKey,
         intentId: cryptopayData.intentId,
         returnUrl: cryptopayData.returnUrl,
-        pollInterval: 10000, // 10 seconds
+        pollInterval: 5000, // 5 seconds for faster updates
         pollTimer: null,
-        expiresAt: null,
+        expiresAt: cryptopayData.expiresAt ? new Date(cryptopayData.expiresAt) : null,
 
         init: function() {
+            this.checkPaymentStatus(); // Check immediately on load
             this.startPolling();
             this.updateCountdown();
             setInterval(() => this.updateCountdown(), 1000);

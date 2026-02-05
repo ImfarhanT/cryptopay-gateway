@@ -9,7 +9,7 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
     {
         $this->id = 'cryptopay';
         $this->icon = '';
-        $this->has_fields = false;
+        $this->has_fields = true;
         $this->method_title = 'CryptoPay (USDT)';
         $this->method_description = 'Accept USDT payments via TRC20 and ERC20 networks';
 
@@ -28,7 +28,38 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
         $this->enable_erc20 = $this->get_option('enable_erc20', 'yes');
 
         add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
+        add_action('woocommerce_receipt_' . $this->id, array($this, 'receipt_page'));
         add_action('woocommerce_thankyou_' . $this->id, array($this, 'thankyou_page'));
+    }
+
+    public function payment_fields()
+    {
+        if ($this->description) {
+            echo '<p>' . esc_html($this->description) . '</p>';
+        }
+        
+        $show_trc20 = $this->enable_trc20 === 'yes';
+        $show_erc20 = $this->enable_erc20 === 'yes';
+        
+        if ($show_trc20 && $show_erc20) {
+            echo '<div class="cryptopay-network-selection" style="margin: 15px 0;">';
+            echo '<p style="margin-bottom: 10px; font-weight: 600;">Select Network:</p>';
+            echo '<label style="display: block; margin: 8px 0; cursor: pointer;">';
+            echo '<input type="radio" name="cryptopay_network" value="TRC20" checked style="margin-right: 8px;">';
+            echo 'USDT TRC20 (TRON) - <span style="color: #27ae60;">Lower fees</span>';
+            echo '</label>';
+            echo '<label style="display: block; margin: 8px 0; cursor: pointer;">';
+            echo '<input type="radio" name="cryptopay_network" value="ERC20" style="margin-right: 8px;">';
+            echo 'USDT ERC20 (Ethereum)';
+            echo '</label>';
+            echo '</div>';
+        } elseif ($show_trc20) {
+            echo '<input type="hidden" name="cryptopay_network" value="TRC20">';
+            echo '<p style="color: #666;">Network: USDT TRC20 (TRON)</p>';
+        } elseif ($show_erc20) {
+            echo '<input type="hidden" name="cryptopay_network" value="ERC20">';
+            echo '<p style="color: #666;">Network: USDT ERC20 (Ethereum)</p>';
+        }
     }
 
     public function init_form_fields()
@@ -118,12 +149,14 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
             );
         }
 
-        // Determine network (for MVP, use TRC20 if enabled, otherwise ERC20)
-        $network = 'TRC20';
-        if ($this->enable_trc20 !== 'yes' && $this->enable_erc20 === 'yes') {
+        // Get selected network from form
+        $network = isset($_POST['cryptopay_network']) ? sanitize_text_field($_POST['cryptopay_network']) : 'TRC20';
+        
+        // Validate network selection
+        if ($network === 'TRC20' && $this->enable_trc20 !== 'yes') {
             $network = 'ERC20';
-        } elseif ($this->enable_trc20 === 'yes' && $this->enable_erc20 === 'yes') {
-            // Both enabled - could add user selection in future
+        }
+        if ($network === 'ERC20' && $this->enable_erc20 !== 'yes') {
             $network = 'TRC20';
         }
 
@@ -138,31 +171,51 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
             );
         }
 
-        $intent_data = json_decode(wp_remote_retrieve_body($response), true);
+        $response_code = wp_remote_retrieve_response_code($response);
+        $response_body = wp_remote_retrieve_body($response);
+        $intent_data = json_decode($response_body, true);
 
-        if (!isset($intent_data['intentId'])) {
-            wc_add_notice('Failed to create payment intent', 'error');
+        // Check for HTTP errors
+        if ($response_code !== 200) {
+            $error_message = isset($intent_data['detail']) ? $intent_data['detail'] : 
+                            (isset($intent_data['title']) ? $intent_data['title'] : 'API Error: ' . $response_code);
+            wc_add_notice('Payment error: ' . $error_message, 'error');
+            error_log('CryptoPay API Error: ' . $response_body);
             return array(
                 'result' => 'fail',
                 'redirect' => '',
             );
         }
 
-        // Store intent ID in order meta
+        if (!isset($intent_data['intentId'])) {
+            wc_add_notice('Failed to create payment intent: Invalid response from server', 'error');
+            error_log('CryptoPay Invalid Response: ' . $response_body);
+            return array(
+                'result' => 'fail',
+                'redirect' => '',
+            );
+        }
+
+        // Store all payment data in order meta
         $order->update_meta_data('_cryptopay_intent_id', $intent_data['intentId']);
         $order->update_meta_data('_cryptopay_network', $network);
-        $order->update_status('on-hold', __('Awaiting crypto payment', 'cryptopay-woocommerce'));
+        $order->update_meta_data('_cryptopay_pay_address', $intent_data['payAddress']);
+        $order->update_meta_data('_cryptopay_crypto_amount', $intent_data['cryptoAmount']);
+        $order->update_meta_data('_cryptopay_qr_string', $intent_data['qrString'] ?? '');
+        $order->update_meta_data('_cryptopay_expires_at', $intent_data['expiresAt']);
+        
+        // Keep order as pending-payment so receipt page works
+        $order->update_status('pending', __('Awaiting crypto payment', 'cryptopay-woocommerce'));
         $order->save();
 
-        // Redirect to payment page
-        $payment_url = add_query_arg(
-            array(
-                'order_id' => $order_id,
-                'intent_id' => $intent_data['intentId'],
-                'key' => $order->get_order_key(),
-            ),
-            wc_get_checkout_url() . 'cryptopay-payment'
-        );
+        // Reduce stock levels
+        wc_reduce_stock_levels($order_id);
+        
+        // Empty the cart
+        WC()->cart->empty_cart();
+
+        // Redirect to order-pay page which triggers receipt_page
+        $payment_url = $order->get_checkout_payment_url(true);
 
         return array(
             'result' => 'success',
@@ -198,6 +251,134 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
         return wp_remote_post($api_url, $args);
     }
 
+    public function receipt_page($order_id)
+    {
+        $order = wc_get_order($order_id);
+        if (!$order) {
+            echo '<p>Order not found.</p>';
+            return;
+        }
+
+        $intent_id = $order->get_meta('_cryptopay_intent_id');
+        $pay_address = $order->get_meta('_cryptopay_pay_address');
+        $crypto_amount = $order->get_meta('_cryptopay_crypto_amount');
+        $network = $order->get_meta('_cryptopay_network');
+        $qr_string = $order->get_meta('_cryptopay_qr_string');
+        $expires_at = $order->get_meta('_cryptopay_expires_at');
+
+        if (empty($intent_id) || empty($pay_address)) {
+            echo '<p>Payment information not available. Please contact support.</p>';
+            return;
+        }
+        ?>
+        <style>
+            .cryptopay-payment { max-width: 500px; margin: 20px auto; padding: 30px; text-align: center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; border-radius: 12px; }
+            .cryptopay-payment h2 { margin: 0 0 25px; color: #1a1a2e; font-size: 24px; }
+            .cryptopay-amount-box { background: #fff; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+            .cryptopay-amount-label { font-size: 14px; color: #666; margin-bottom: 5px; }
+            .cryptopay-amount { font-size: 32px; font-weight: 700; color: #27ae60; }
+            .cryptopay-address-box { background: #fff; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+            .cryptopay-address { font-family: 'Courier New', monospace; font-size: 13px; word-break: break-all; background: #f1f3f4; padding: 12px; border-radius: 6px; margin: 10px 0; border: 1px solid #e0e0e0; }
+            .cryptopay-copy-btn { padding: 12px 24px; background: #4CAF50; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background 0.2s; }
+            .cryptopay-copy-btn:hover { background: #45a049; }
+            .cryptopay-qr { margin: 20px 0; }
+            .cryptopay-qr img { max-width: 200px; border: 1px solid #e0e0e0; padding: 10px; background: white; border-radius: 8px; }
+            .cryptopay-timer { background: #fff3cd; padding: 15px; border-radius: 8px; margin: 20px 0; }
+            .cryptopay-timer-label { font-size: 14px; color: #856404; }
+            .cryptopay-countdown { font-size: 28px; font-weight: 700; color: #856404; }
+            .cryptopay-status { padding: 15px; border-radius: 8px; margin-top: 20px; background: #e3f2fd; color: #1565c0; font-weight: 500; }
+            .cryptopay-status.paid { background: #d4edda; color: #155724; }
+            .cryptopay-status.expired { background: #f8d7da; color: #721c24; }
+            .cryptopay-network-badge { display: inline-block; background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; margin-bottom: 15px; }
+        </style>
+
+        <div class="cryptopay-payment">
+            <h2>💰 Pay with USDT</h2>
+            <span class="cryptopay-network-badge"><?php echo esc_html($network); ?> Network</span>
+            
+            <div class="cryptopay-amount-box">
+                <div class="cryptopay-amount-label">Amount to send:</div>
+                <div class="cryptopay-amount"><?php echo esc_html(number_format((float)$crypto_amount, 6)); ?> USDT</div>
+            </div>
+            
+            <div class="cryptopay-address-box">
+                <div class="cryptopay-amount-label">Send to this address:</div>
+                <div class="cryptopay-address" id="pay-address"><?php echo esc_html($pay_address); ?></div>
+                <button class="cryptopay-copy-btn" onclick="cryptopayCopyAddress()">📋 Copy Address</button>
+            </div>
+            
+            <?php if ($qr_string): ?>
+            <div class="cryptopay-qr">
+                <img src="data:image/png;base64,<?php echo esc_attr($qr_string); ?>" alt="QR Code">
+            </div>
+            <?php endif; ?>
+            
+            <div class="cryptopay-timer">
+                <div class="cryptopay-timer-label">⏳ Time remaining:</div>
+                <div class="cryptopay-countdown" id="cryptopay-countdown">--:--</div>
+            </div>
+            
+            <div class="cryptopay-status" id="cryptopay-status">
+                Waiting for payment...
+            </div>
+        </div>
+
+        <script>
+        (function() {
+            var intentId = '<?php echo esc_js($intent_id); ?>';
+            var apiUrl = '<?php echo esc_js(rtrim($this->api_base_url, "/")); ?>';
+            var apiKey = '<?php echo esc_js($this->api_key); ?>';
+            var returnUrl = '<?php echo esc_js($this->get_return_url($order)); ?>';
+            var expiresAt = new Date('<?php echo esc_js($expires_at); ?>');
+            
+            window.cryptopayCopyAddress = function() {
+                var address = document.getElementById('pay-address').textContent;
+                navigator.clipboard.writeText(address).then(function() {
+                    var btn = event.target;
+                    btn.textContent = '✅ Copied!';
+                    setTimeout(function() { btn.textContent = '📋 Copy Address'; }, 2000);
+                });
+            };
+            
+            function updateCountdown() {
+                var now = new Date();
+                var diff = expiresAt - now;
+                if (diff <= 0) {
+                    document.getElementById('cryptopay-countdown').textContent = 'EXPIRED';
+                    document.getElementById('cryptopay-status').textContent = 'Payment expired. Please create a new order.';
+                    document.getElementById('cryptopay-status').className = 'cryptopay-status expired';
+                    return;
+                }
+                var minutes = Math.floor(diff / 60000);
+                var seconds = Math.floor((diff % 60000) / 1000);
+                document.getElementById('cryptopay-countdown').textContent = 
+                    String(minutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0');
+            }
+            
+            function checkStatus() {
+                fetch(apiUrl + '/v1/intents/' + intentId, {
+                    headers: { 'X-API-Key': apiKey }
+                })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.status === 'PAID') {
+                        document.getElementById('cryptopay-status').textContent = '✅ Payment confirmed! Redirecting...';
+                        document.getElementById('cryptopay-status').className = 'cryptopay-status paid';
+                        setTimeout(function() { window.location.href = returnUrl; }, 2000);
+                    }
+                })
+                .catch(function(err) { console.log('Status check error:', err); });
+            }
+            
+            setInterval(updateCountdown, 1000);
+            setInterval(checkStatus, 5000);
+            updateCountdown();
+            setTimeout(checkStatus, 1000);
+        })();
+        </script>
+        <?php
+    }
+
     public function thankyou_page($order_id)
     {
         $order = wc_get_order($order_id);
@@ -210,6 +391,6 @@ class CryptoPay_Gateway extends WC_Payment_Gateway
             return;
         }
 
-        echo '<p>' . esc_html__('Your payment is being processed. You will receive a confirmation email once the transaction is confirmed on the blockchain.', 'cryptopay-woocommerce') . '</p>';
+        echo '<p style="padding: 15px; background: #d4edda; color: #155724; border-radius: 8px;">✅ ' . esc_html__('Your crypto payment has been received! Your order is being processed.', 'cryptopay-woocommerce') . '</p>';
     }
 }

@@ -3,14 +3,8 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Register custom endpoint for payment page
-add_action('init', 'cryptopay_add_payment_endpoint');
+// Handle payment page display
 add_action('template_redirect', 'cryptopay_handle_payment_page');
-
-function cryptopay_add_payment_endpoint()
-{
-    add_rewrite_endpoint('cryptopay-payment', EP_ROOT | EP_PAGES);
-}
 
 function cryptopay_handle_payment_page()
 {
@@ -47,6 +41,7 @@ function cryptopay_handle_payment_page()
         'orderKey' => $key,
         'returnUrl' => $gateway->get_return_url($order),
         'ajaxUrl' => admin_url('admin-ajax.php'),
+        'expiresAt' => $intent_data['expiresAt'] ?? null,
     ));
 
     wp_enqueue_style('cryptopay-payment', CRYPTOPAY_PLUGIN_URL . 'assets/css/payment-page.css', array(), CRYPTOPAY_VERSION);

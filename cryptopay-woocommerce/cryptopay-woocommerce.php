@@ -23,6 +23,28 @@ define('CRYPTOPAY_VERSION', '1.0.0');
 define('CRYPTOPAY_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('CRYPTOPAY_PLUGIN_URL', plugin_dir_url(__FILE__));
 
+// Activation hook - flush rewrite rules
+register_activation_hook(__FILE__, 'cryptopay_activate');
+function cryptopay_activate()
+{
+    cryptopay_add_payment_endpoint();
+    flush_rewrite_rules();
+}
+
+// Deactivation hook
+register_deactivation_hook(__FILE__, 'cryptopay_deactivate');
+function cryptopay_deactivate()
+{
+    flush_rewrite_rules();
+}
+
+// Add endpoint on init
+add_action('init', 'cryptopay_add_payment_endpoint');
+function cryptopay_add_payment_endpoint()
+{
+    add_rewrite_endpoint('cryptopay-payment', EP_ROOT | EP_PAGES);
+}
+
 // Check if WooCommerce is active
 add_action('plugins_loaded', 'cryptopay_init', 11);
 
@@ -63,7 +85,7 @@ function cryptopay_register_webhook_endpoint()
 function cryptopay_handle_webhook($request)
 {
     $headers = $request->get_headers();
-    $signature = $headers['x-cryptopay-signature'][0] ?? '';
+    $signature = $headers['x_cryptopay_signature'][0] ?? '';
     $payload = $request->get_body();
     
     $options = get_option('woocommerce_cryptopay_settings', array());
